@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { margin: 2.5cm 2cm; size: A4; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11pt; color: #222; line-height: 1.6; }
+  h1 { font-size: 20pt; color: #1a5276; border-bottom: 2px solid #1a5276; padding-bottom: 6px; margin-top: 0; }
+  h2 { font-size: 14pt; color: #2c3e50; margin-top: 32px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+  h3 { font-size: 12pt; color: #34495e; margin-top: 20px; }
+  code { background: #f4f4f4; padding: 1px 4px; border-radius: 3px; font-size: 10pt; }
+  pre { background: #f4f4f4; padding: 12px; border-radius: 5px; font-size: 9.5pt; line-height: 1.4; border-left: 3px solid #1a5276; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+  th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; font-size: 10pt; }
+  th { background: #eaf2f8; }
+  .note { background: #fef9e7; border-left: 3px solid #f1c40f; padding: 8px 12px; margin: 14px 0; font-size: 10pt; }
+  .diagram { text-align: center; margin: 18px 0; font-size: 10.5pt; color: #34495e; }
+  .diagram .box { display: inline-block; border: 2px solid #1a5276; border-radius: 6px; padding: 6px 14px; background: #eaf2f8; margin: 0 4px; }
+  .diagram .arrow { display: inline-block; margin: 0 6px; font-size: 16pt; vertical-align: middle; color: #1a5276; }
+</style>
+</head>
+<body>
+
+<h1>phonetizer &mdash; Developer Guide</h1>
+
+<h2>1. The big picture</h2>
+
+<p>
+This module powers a <strong>Quran recitation correction app</strong>. The idea is simple: a person recites the Quran out loud, and the app tells them in real time which parts they recited correctly and which parts they got wrong.
+</p>
+
+<p>Under the hood, two things happen in sequence:</p>
+
+<div class="diagram">
+  <span class="box">Microphone audio</span>
+  <span class="arrow">&rarr;</span>
+  <span class="box"><strong>Transcriber</strong><br><small>speech &rarr; phonetic text</small></span>
+  <span class="arrow">&rarr;</span>
+  <span class="box"><strong>Corrector</strong><br><small>phonetic text &rarr; colored Quran text</small></span>
+  <span class="arrow">&rarr;</span>
+  <span class="box">Display to user</span>
+</div>
+
+<ol>
+  <li>The <strong>Transcriber</strong> listens to the microphone and converts the audio into a special phonetic text &mdash; a representation of what the person is saying, written in a phonetic alphabet designed for Quranic Arabic. You don't need to understand this format; just treat it as an opaque string that flows from one component to the next.</li>
+  <li>The <strong>Corrector</strong> takes that phonetic text, figures out which verse of the Quran the person is reciting, and compares what they said to the actual text. It returns the Quran text along with a color for each character: green if correct, orange if slightly off, red if missing.</li>
+</ol>
+
+<p>Both objects are <strong>stateful</strong>. They remember everything from earlier in the session. You create them once when the user starts reciting, feed them data as it comes, and throw them away when the session ends.</p>
+
+<h2>2. Why JavaScript?</h2>
+<p>
+The original code was written in Python. Python is great for prototyping, but it's a poor fit for a production mobile app:
+</p>
+<ul>
+  <li><strong>Size.</strong> Bundling a Python interpreter and its libraries (NumPy, ONNX Runtime, kaldi-native-fbank) adds roughly <strong>50&nbsp;MB</strong> to the app.</li>
+  <li><strong>Startup time.</strong> Launching Python and importing those libraries takes several seconds before the app can process the first audio frame.</li>
+  <li><strong>Speed.</strong> Python's interpreted loops are very slow compared to JavaScript running on a JIT-compiled engine like V8 or Hermes.</li>
+</ul>
+<p>
+This folder is a complete JavaScript rewrite. It needs only one native library (<code>onnxruntime-node</code>, for running the neural network). Everything else &mdash; the audio signal processing, the text processing, the Quran search index &mdash; is implemented in pure JavaScript.
+</p>
+
+<h2>3. What's in the folder</h2>
+
+<p>You only need to know about two files:</p>
+<table>
+  <tr><th>File</th><th>What it does</th></tr>
+  <tr><td><code>model_api.js</code></td><td>Exports the <code>Transcriber</code> class (audio &rarr; phonetic text)</td></tr>
+  <tr><td><code>correction.js</code></td><td>Exports the <code>Finder</code> and <code>Corrector</code> classes (phonetic text &rarr; correction)</td></tr>
+</table>
+
+<p>The folder also contains data files that these classes need at runtime:</p>
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>comp_graph.onnx</code></td><td>The neural network model</td></tr>
+  <tr><td><code>meta_data.json</code>, <code>vocab.json</code></td><td>Configuration files for the model</td></tr>
+  <tr><td><code>quran.json</code></td><td>The full Quran text (Warsh riwaya)</td></tr>
+</table>
+
+<p style="font-size:10pt; color:#666;">
+All other <code>.js</code> files in the folder are internal helpers. You never import them directly.
+</p>
+
+
+<h2>4. The Transcriber</h2>
+
+<p>
+The Transcriber converts audio into phonetic text. Think of it as a live subtitling engine: you feed it audio, and at any point you can ask "what has been said so far?"
+</p>
+
+<h3>Step 1 &mdash; Create and initialize</h3>
+<p>Point it to the three data files and call <code>init()</code>. This loads the neural network into memory. Do this once, before you start processing audio.</p>
+<pre>
+const { Transcriber } = require("./phonetizer/model_api");
+
+const transcriber = new Transcriber(
+  "./phonetizer/comp_graph.onnx",
+  "./phonetizer/meta_data.json",
+  "./phonetizer/vocab.json"
+);
+await transcriber.init();
+</pre>
+
+<h3>Step 2 &mdash; Feed audio</h3>
+<p>
+As audio arrives from the microphone, pass it to <code>push()</code> immediately. The audio must be <strong>mono, 16&nbsp;kHz, float32</strong> samples (values between &minus;1 and 1). Don't buffer &mdash; push every chunk as soon as your audio layer delivers it, no matter how small.
+</p>
+<pre>
+// 'samples' comes from your audio capture layer (e.g. a WebAudio callback)
+await transcriber.push(Array.from(samples));
+</pre>
+
+<h3>Step 3 &mdash; Read the result</h3>
+<p>
+At any point, call <code>read()</code> to get the phonetic text accumulated so far. This is a cheap call &mdash; it doesn't do any computation, it just returns the current text.
+</p>
+<pre>
+const phoneticText = transcriber.read();
+// phoneticText is a string like "sبِسمِللَااهِررَحمَاانِ..."
+// You don't need to parse or understand it — just pass it to the Corrector.
+</pre>
+
+<div class="note">
+  <strong>Important:</strong> The Transcriber is stateful. Audio chunks must arrive in order, and you cannot rewind. When the user stops and starts a new recitation session, create a fresh <code>Transcriber</code> instance or call <code>reset()</code>.
+</div>
+
+
+<h2>5. The Corrector</h2>
+
+<p>
+The Corrector is the core of the app. It takes the phonetic text from the Transcriber and answers three questions:
+</p>
+<ol>
+  <li><strong>Where in the Quran</strong> is the reciter right now?</li>
+  <li><strong>What is the actual Quran text</strong> (in uthmani script) for that passage?</li>
+  <li><strong>Which characters did the reciter get right</strong>, and which did they get wrong?</li>
+</ol>
+
+<h3>Step 1 &mdash; Create a Finder</h3>
+<p>
+Before you can correct anything, you need a <code>Finder</code>. The Finder builds a search index over the entire Quran so the Corrector can quickly locate any passage. This is a one-time cost:
+</p>
+<ul>
+  <li><strong>First run:</strong> takes about 3 seconds to build. The result is saved to a cache folder on disk.</li>
+  <li><strong>Subsequent runs:</strong> loads from cache in milliseconds.</li>
+</ul>
+<pre>
+const { Finder, Corrector } = require("./phonetizer/correction");
+
+const finder = new Finder(
+  "./phonetizer/quran.json",            // Quran text
+  "./phonetizer/Data_for_quran_search"  // cache folder (created automatically)
+);
+</pre>
+<p>You typically create one Finder when the app starts and reuse it for every session.</p>
+
+<h3>Step 2 &mdash; Create a Corrector</h3>
+<p>Create one Corrector per recitation session:</p>
+<pre>
+const corrector = new Corrector(finder);
+</pre>
+
+<p>If you know which verse the reciter will start from, you can tell the Corrector so it doesn't have to guess:</p>
+<pre>
+// The user chose to start from Sura 2, Aya 255 (Ayat al-Kursi):
+const startCursor = finder.verseToCursor([2, 255]);
+const corrector = new Corrector(finder, startCursor);
+</pre>
+
+<h3>Step 3 &mdash; Call <code>correct()</code></h3>
+<p>
+Every time you get new phonetic text from the Transcriber, pass it to <code>correct()</code>:
+</p>
+<pre>
+const [uthmaniText, colors, additions] = corrector.correct(phoneticText);
+</pre>
+
+<p>This returns three things:</p>
+
+<table>
+  <tr><th style="width:130px">Return value</th><th>What it is</th></tr>
+  <tr>
+    <td><code>uthmaniText</code></td>
+    <td>A <code>string</code> containing the Quran text (uthmani script) that corresponds to what the reciter is saying. This is what you display on screen.</td>
+  </tr>
+  <tr>
+    <td><code>colors</code></td>
+    <td>An array of numbers, <strong>one per character</strong> of <code>uthmaniText</code>. Each number tells you how to color that character:
+      <br><code>&nbsp;1</code> = <strong>correct</strong> &nbsp;(green)
+      <br><code>&nbsp;0</code> = <strong>slightly off</strong> &nbsp;(orange &mdash; e.g. wrong duration or slight mispronunciation)
+      <br><code>-1</code> = <strong>missing / skipped</strong> &nbsp;(red)
+    </td>
+  </tr>
+  <tr>
+    <td><code>additions</code></td>
+    <td>Positions where the reciter inserted words that are not in the Quran. Not used at the moment &mdash; you can ignore this array.</td>
+  </tr>
+</table>
+
+<p><strong>Example:</strong> if <code>uthmaniText</code> is <code>"بِسْمِ ٱللَّهِ"</code> and <code>colors</code> is <code>[1,1,1,1,1,-1,-1,-1,-1,-1]</code>, it means the reciter got the first five characters right (green) but skipped the rest (red).</p>
+
+<h3>Understanding the cursor</h3>
+
+<p>
+The Corrector needs to know <em>where</em> in the Quran the reciter is, so it can compare what they say to the right passage. It tracks this with a number called the <strong>cursor</strong>.
+</p>
+
+<p>
+Think of the entire Quran written out as one long line of text, from the first verse of Al-Fatiha to the last verse of An-Nas. The cursor is simply a position in that line &mdash; like a bookmark that moves forward as the reciter progresses.
+</p>
+
+<ul>
+  <li>The cursor <strong>advances automatically</strong> with each call to <code>correct()</code>.</li>
+  <li>You can read it at any time: <code>corrector.cursor</code></li>
+  <li>To find out which sura and aya the cursor is in, call: <code>corrector.getAya(phoneticText)</code>, which returns <code>[[sura, aya], score]</code>.</li>
+</ul>
+
+<p>You rarely need to manipulate the cursor yourself. The only time you set it manually is at construction, if you know the starting verse (as shown above).</p>
+
+<div class="note">
+  <strong>Important:</strong> Like the Transcriber, the Corrector is stateful. The same instance must be used for the entire recitation session. Each <code>correct()</code> call builds on the previous one. If you create a new Corrector mid-session, it loses track of where the reciter is and has to re-discover the position from scratch.
+</div>
+
+
+<h2>6. Full example</h2>
+
+<p>Here is a minimal working example that ties everything together:</p>
+
+<pre>
+const { Transcriber } = require("./phonetizer/model_api");
+const { Finder, Corrector } = require("./phonetizer/correction");
+
+async function startSession(startSura, startAya) {
+
+  // === Setup (do this once when the app launches) ===
+
+  // Build / load the Quran search index
+  const finder = new Finder(
+    "./phonetizer/quran.json",
+    "./phonetizer/Data_for_quran_search"
+  );
+
+  // Load the speech recognition model
+  const transcriber = new Transcriber(
+    "./phonetizer/comp_graph.onnx",
+    "./phonetizer/meta_data.json",
+    "./phonetizer/vocab.json"
+  );
+  await transcriber.init();
+
+  // Create a corrector starting at the chosen verse
+  const cursor = finder.verseToCursor([startSura, startAya]);
+  const corrector = new Corrector(finder, cursor);
+
+
+  // === Audio loop (called repeatedly as audio comes in) ===
+
+  async function onAudioChunk(samples) {
+    // 1. Feed audio to the transcriber
+    await transcriber.push(Array.from(samples));
+
+    // 2. Get the phonetic text (what has been said so far)
+    const phoneticText = transcriber.read();
+
+    // 3. Compare to the Quran
+    const [uthmaniText, colors, additions] = corrector.correct(phoneticText);
+
+    // 4. Find which verse we're in
+    const [[sura, aya], score] = corrector.getAya(phoneticText);
+
+    // 5. Now render: display uthmaniText on screen,
+    //    coloring each character i according to colors[i].
+    //    (1 = green, 0 = orange, -1 = red)
+  }
+
+  return onAudioChunk;
+}
+
+// Usage: start reciting from Sura 1, Aya 1
+const processChunk = await startSession(1, 1);
+
+// Then, every time your audio layer delivers a new chunk:
+// await processChunk(audioSamples);
+</pre>
+
+<h2>7. Quick reference</h2>
+<table>
+  <tr><th></th><th>Transcriber</th><th>Corrector</th></tr>
+  <tr><td><strong>Input</strong></td><td>Audio samples<br>(float32[], 16 kHz, mono)</td><td>Phonetic text string<br>(from Transcriber)</td></tr>
+  <tr><td><strong>Output</strong></td><td>Phonetic text string</td><td>Quran text + colors + additions</td></tr>
+  <tr><td><strong>Stateful?</strong></td><td>Yes &mdash; one instance per<br>recording session</td><td>Yes &mdash; one instance per<br>recitation session</td></tr>
+  <tr><td><strong>Async?</strong></td><td>Yes (<code>init()</code>, <code>push()</code>)</td><td>No (synchronous)</td></tr>
+</table>
+
+</body>
+</html>
