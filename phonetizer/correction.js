@@ -672,7 +672,11 @@ class Finder {
     const penetration = (wordEnd - start - track[firstMatch]) / (wordEnd - wordStart || 1);
 
     const firstUthmaniWord = penetration > 0.5 ? wordStart : wordEnd + 1;
-    const lastUthmaniWord = this.endWord(start + track[lastMatch]);
+
+    const lastWordStart = this.startWord(start + track[lastMatch]);
+    const lastWordEnd = this.endWord(start + track[lastMatch]);
+    const lastPenetration = (start + track[lastMatch] - lastWordStart) / (lastWordEnd - lastWordStart || 1);
+    const lastUthmaniWord = lastPenetration > 0.4 ? lastWordEnd : lastWordStart + 1;
 
     return [firstUthmaniWord, lastUthmaniWord];
   }
