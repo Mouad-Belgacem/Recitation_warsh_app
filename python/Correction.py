@@ -860,7 +860,7 @@ class Finder:
         last_word_end = self.end_word(start + track[last_match])
         last_penetration = (start + track[last_match] - last_word_start) / (last_word_end - last_word_start)
 
-        last_uthmani_word = last_word_end if last_penetration > 0.4 else last_word_start + 1
+        last_uthmani_word = last_word_end if last_penetration > 0.4 else last_word_start - 1
         # last_uthmani_word = self.end_word(start + track[last_match])
 
         return first_uthmani_word, last_uthmani_word

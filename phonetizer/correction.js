@@ -676,7 +676,7 @@ class Finder {
     const lastWordStart = this.startWord(start + track[lastMatch]);
     const lastWordEnd = this.endWord(start + track[lastMatch]);
     const lastPenetration = (start + track[lastMatch] - lastWordStart) / (lastWordEnd - lastWordStart || 1);
-    const lastUthmaniWord = lastPenetration > 0.4 ? lastWordEnd : lastWordStart + 1;
+    const lastUthmaniWord = lastPenetration > 0.4 ? lastWordEnd : lastWordStart - 1;
 
     return [firstUthmaniWord, lastUthmaniWord];
   }
